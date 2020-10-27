@@ -1,0 +1,436 @@
+---
+title: "95778 - R for DS - Final Project - TEAM 3"
+subtitle: "Research on COVID-19 Cases Distribution and Hospital Resources"
+author: "Haley Nordeen and Georgia Fu"
+date: "4/26/2020"
+output:
+  html_document:
+    toc: true
+    toc_depth: 5
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+install.packages("usmap")
+install.packages("maps")
+#install.packages("mapproj")
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+options(scipen = 4)
+```
+
+# Part 1: Introduction
+
+## Dataset Description
+Our two datasets are hospital capacity by state and COVID-19 case and death data by county, produced by different sources but both found on the Data Center at https://data.world/resources/coronavirus/. Using these two datasets, we would like to explore the relationships between a state’s hospital capacity and the level of COVID-19 infections / deaths. 
+
+#### Dataset 1: Hospital Capacity by State from HGHI
+
+The first dataset is about hospital and ICU capacity of each US state, from Health system researchers at the Harvard Global Health Institute (HGHI). They built a model that builds on bed capacity data and gives estimates of available beds and the beds that will be required in the coming months. Their model assesses hospital capacity over six, twelve, and eighteen months, if 20%, 40%, or 60% of the population contracts COVID-19. We have chosen to use the 20% sheet as our hospital capacity dataset. Variables include: Population, Population over 65, Total Hospital Beds, Total ICU Beds, Available ICU Beds, Potentially Infected Population, ICU Bed Occupancy Rate, Projected Hospitalized Individuals, ICU Beds Needed 6 months, etc. 
+**Source**: <https://data.world/liz-friedman/hospital-capacity-data-from-hghi>
+
+#### Dataset 2: Johns Hopkins' County-level COVID-19 Case and Death Data
+
+The second dataset we chose to examine is the county-level case data updated constantly by Johns Hopkins University. The data includes confirmed cases, deaths, urbanization type, and has already been paired with population. It also controls for population and has variables for confirmed cases and deaths per 100,000. The data is updated frequently, and we downloaded it on April 24, 2020, so it does not include any cases/deaths after that point. 
+**Source**: <https://data.world/associatedpress/johns-hopkins-coronavirus-case-tracker>
+
+## Research Questions:
+#### **1. Hospital Capacity**
+ - Which states have the most Hospital beds and ICU beds per capita?
+ - Do states have enough ICU beds to cover the projected need?
+ - Which states have the highest proportion of people over the age of 65? Do states with a higher elderly population generally have more hospital or ICU beds?
+ - How does the HGHI model show the demand for ICU bed capacity changing at 6, 12, and 18 months out? Which states will have the greatest need for increased capacity? Which will have the least? 
+
+#### **2. Confirmed Cases & Deaths**
+ - Which states have the highest infection level? How is it distributed among states?
+ - Which states have the most cases and deaths per 100,000? Within those states, what counties have the most?
+ - Does urbanization type (large central metro, non-core, etc) affect the infection and death rates?
+ - What is PA’s distribution of cases by county?
+
+#### **3. Hospital Capacity & Case Data**
+ - What is the relationship between urbanization type and hospital capacity?
+ - How does death or case rate relate to hospital capacity? Are death rates higher in places with less ICU beds per 100,000?
+ - Which states are the hardest hit? Is it because of their urbanization type or because of their hospital capacity?
+
+## General Description of Data Transformation
+We loaded the datasets into R, removed missing values where appropriate. Then we grouped our case data by state, transformed urbanization levels into factors,  we created and referenced the following data frames from the raw data.   
+ - Table **confirm_cases** is the case data from JHU, with a death rate column added, and several columns removed (last update, lat, long, and county name long)  
+ - Table **hospop** is the hospital capacity from HGHI, filtered to only include the data for a 20% infection situation, and adjusted so that columns are counts per 100,000  
+ - Table **state_Cases** is confirmed_cases grouped by state.  
+ - Table **df_combine** is state_cases and hospop combined on state abbreviation. Includes 50 states and DC. Puerto Rico was included in hospital capacity but there was no case data available so it was dropped.
+
+
+# Part 2: Load and Process Data
+
+#### Load and Pricess Dataset1 - Confirmed/Death cases
+
+ - Filter na, Calculate death rate, Delete useless columns, Rename columns, Relace NA with 0
+ 
+```{r}
+confirm_cases<-read.csv('confirmed_cases.csv')
+confirm_cases<-filter(confirm_cases,!is.na(confirmed_per_100000|deaths_per_100000))%>%
+  mutate(deaths_rate=deaths/confirmed)%>%
+  select(-last_update,-county_name_long,-lat,-lon)%>%
+  rename(fips=fips_code,counties=county_name)
+confirm_cases$deaths_rate[is.na(confirm_cases$deaths_rate)]<-0
+head(confirm_cases)
+cols<-c('confirmed','confirmed_per_100000','deaths','deaths_rate')
+summary(confirm_cases[cols])
+
+```
+
+#### Load Dataset2: Hospital Capacity
+ - Filter missing values, Rename Columns, Staisically discribe key attributes
+```{r, results = 'hide'}
+
+hosp20 <- read.csv('hospital20.csv') 
+hosp20<-hosp20[complete.cases(hosp20),]
+hosp20<-rename(hosp20,"state"="State",)
+head(hosp20)
+hosp20 %>%
+  summary()
+```
+
+#### Group Dataset 1 by State
+ - Relabel 'NCHS_urbanization' to numeric
+ - Group and Summarize key index on state level
+ - relabel 'NCHS_urbanization' to character
+ - Order by confirmed Cases of states and list first 10 states
+
+```{r}
+Mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+state_Cases <- mutate(confirm_cases, 
+               NCHS_urbanization = recode_factor(NCHS_urbanization, 
+                                      `Medium metro` = 1L,
+                                      `Small metro` = 2L,
+                                      `Non-core` = 3L,
+                                      `Large fringe metro`=4L,
+                                      `Micropolitan`=5L,
+                                      `Large central metro`=6L))
+state_Cases<-group_by(state_Cases, state, abbr)%>%
+  summarize(confirmed_per_100000_state=mean(confirmed_per_100000),
+            confirmed_num_state=sum(confirmed),
+            deaths_per_100000_state=mean(deaths_per_100000),
+            deaths_num_state=sum(deaths),
+            deaths_rate_state=mean(deaths_rate),
+            pop_state=sum(total_population),
+            NCHS_urbanization=Mode(NCHS_urbanization))%>%
+  mutate(NCHS_urbanization = recode_factor(NCHS_urbanization,
+                                     `1`= "Medium metro",
+                                     `2`="Small metro",
+                                     `3`="Non-core",
+                                     `4`= "Large fringe metro",
+                                     `5`="Micropolitan",
+                                     `6`="arge central metro"))%>%
+    arrange(desc(confirmed_num_state))
+head(state_Cases)
+```
+
+#### Classify states with Infection levels 
+Based on number of confirmed cases per 100000 recidents, we classified infection rates of those states into 6 levels:  
+ - < 0.1%, 0.1% - 0.2%, 0.2% - 0.3%,0.3% - 0.4%,0.4% - 0.5%, > 0.5%
+
+```{r}
+
+state_Cases <- within(state_Cases,{
+       Infection_level <- NA
+       Infection_level[confirmed_per_100000_state
+ < 100] <- "1"
+       Infection_level[confirmed_per_100000_state
+ >=100 & confirmed_per_100000_state
+ < 200] <- "2"
+       Infection_level[confirmed_per_100000_state
+ >=200 & confirmed_per_100000_state
+ < 300] <- "3"
+       Infection_level[confirmed_per_100000_state
+ >=300 & confirmed_per_100000_state
+ < 400] <- "4"
+       Infection_level[confirmed_per_100000_state
+ >=400 & confirmed_per_100000_state
+ < 500] <- "5"
+       Infection_level[confirmed_per_100000_state
+ >=500] <- "6"
+       })
+
+state_Cases$Infection_level = factor(state_Cases$Infection_level, levels = c(1,2,3,4,5,6), labels = c("< 0.1%","0.1% - 0.2%","0.2% - 0.33%","0.3% - 0.4%","0.4% - 0.5%",">0.5 %"))
+
+head(select(state_Cases,Infection_level,confirmed_per_100000_state))
+```
+
+
+#### Transform Value to Ratio
+We'll focus on the beds and hospitalization per population. To make data among different states comparable, we transformed hospital bed and ICU bed numbers into beds per 100,000 in the adult population. This way, it will be easier to compare between states regardless of population.
+
+```{r hospital beds}
+hospop = hosp20 %>%
+  transmute(state = state, Total_Hospital_Beds_Pop = (Total_Hospital_Beds/Adult_Population)*100000, 
+         Total_ICU_Beds_Pop = (Total_ICU_Beds/Adult_Population)*100000, 
+         Available_ICU_Pop = (Available_ICU_Beds/Adult_Population)*100000,
+         Available_ICU_65pop = (Available_ICU_Beds/Population_65)*100000,
+         Potential_Infected_Pop = (Projected_Infected_Individuals/Adult_Population)*100000,
+         Hospitalization_Needing_Pop = (Proejcted_Hospitalized_Individuals/Adult_Population)*100000,
+         ICU_Needing_Pop = (Projected_Individuals_Needing_ICU_Care/Adult_Population)*100000,
+         Potentially_Available_ICU_Pop = (Potentially_Available_ICU_Beds/Adult_Population)*100000,
+         Prop_65 = (Population_65/Adult_Population),
+         Adult_Population = Adult_Population)
+head(hospop)
+```
+
+#### Combine 2 datasets 
+We combined the twodatasets to get **df_combine** dataframe, which contains both confirmed/death cases and demand and supply data of hospital resources.
+```{r combine 2 datasets}
+df_combine<-merge(state_Cases,hospop%>%rename("abbr"="state"),by="abbr")
+head(df_combine)
+```
+
+# Part 3: Data Exploration 
+### Infection Level  
+ - 55% states have infection rate (confirmed rate) lower than 0.1%
+ - 26% residents have confirmed rate between 0.1% to 0.2%
+```{r}
+bar <- ggplot(data = df_combine,aes(x ='Infection_level',fill = Infection_level)) + 
+  geom_bar(stat = "count",width = 0.5,position='stack')+
+  labs(x='',y='',title="State Distribution of Infection Levels")
+bar + coord_polar(theta='y',start=0)+
+  scale_fill_manual(values=c("#999999", "#E69F00", "#56B4E9","#6983B4","#A7CAF0","#2A3B4D"))+
+  geom_text(stat="count",aes(label = scales::percent(..count../51)), size=4, position=position_stack(vjust = 0.5))
+```
+
+
+### Top Counties of Top States - Confirmed Cases
+ - First, we extract five states that have highest average confirmed ratio, they are **Connecticut, Delware, District of Columbia, Massachusetts, New Jersey**.
+ - Then we extract top 3 counties with highest confirmed ratio within each of the 5 states.
+ - The plot suggests that **New Jersey** have very high confirmed ratio compared to other states. Its top 3 counties also have much higher confirmed ratio compare to other counties. 
+```{r}
+top5_confirmed_state=arrange(state_Cases,desc(confirmed_per_100000_state))$state[1:5]
+top_3_counties<-confirm_cases%>%filter(state %in% top5_confirmed_state)%>%
+group_by(state)%>%top_n(3,confirmed_per_100000)%>%arrange(confirmed_per_100000)
+top_3_counties$counties <- factor(top_3_counties$counties, levels = top_3_counties$counties)
+ggplot(data = top_3_counties, aes(counties, confirmed_per_100000, fill = state)) +
+  scale_fill_manual(values=c("#61BAE5","#E69F00","#6983B4","#A7CAF0","#2A3B4D"))+
+  geom_bar(stat = "identity")+ coord_flip()+labs(title=" Confirmed Ratio - Top3 Counties of Top5 States" )
+```
+
+### Top Counties of Top States - Death Rate
+ - First, we extract five states that have highest death rate (= death cases/confirmed cases), they are **Connecticut, Indiana, Louisiana, Michigan, North Dakota**.
+ - Then we extract top 3 counties with highest death rate within each of the 5 states.
+ - The plot suggests that **North Dakota** have very high death rate compared to other states. Its top 2 counties, which are McHenry and Emmons also have much higher death rate compared to other counties.
+ - Dickinson of Michigan also should be paid attention to as its death rate is also very high.
+ 
+```{r}
+top5_deaths_rate_state=arrange(state_Cases,desc(deaths_rate_state))$state[1:5]
+top_3_counties_deaths_rate<-confirm_cases%>%filter(state %in% top5_deaths_rate_state)%>%
+group_by(state)%>%top_n(3,deaths_rate)%>%arrange(deaths_rate)
+top_3_counties_deaths_rate$counties <- factor(top_3_counties_deaths_rate$counties, levels = top_3_counties_deaths_rate$counties)
+ggplot(data = top_3_counties_deaths_rate, aes(counties, deaths_rate, fill = state)) + 
+  scale_fill_manual(values=c("#61BAE5","#E69F00","#6983B4","#A7CAF0","#2A3B4D"))+
+  geom_bar(stat = "identity")+ coord_flip()+labs(title="Death Rate - Top3 Counties of Top5 States")
+
+```
+### Confirmed and Death rate from NCHS_urbanization's perpective
+ - We analyzed relationship among **confirmed ratio, death rate, and urbanization Type** .
+ - We could see that compared to other urbanization type, Large fringe metro have more counties that have high confirmed cases, but the death rate is not high, maybe because those areas have lower population density. 
+ - For medium metro, both the confimed cases and death rates are low, which may because they have fewer people and enough hospital capacity, making it easier to keep social distance and prevent inflection or death.
+ 
+```{r}
+ggplot(data = confirm_cases) + 
+  geom_point(mapping = aes(x = confirmed_per_100000, y = deaths_rate)) + 
+  facet_wrap(~ NCHS_urbanization, nrow = 2)+labs(title="Confirmed & Death rate of different urbanization")
+```
+
+### Confirmed cases per capita by Deaths per capita
+ - We expect that confirmed ratio should have positive relationship with deaths ratio.
+ - It turned out that this is true for large central metro and medium metro. These 2 variables have linear relationship for these 2 urbanization type. 
+ - For states of with many non-core or large fringe metro counties, the death ratio increase as the confirmed ratio increase, but with a decreasing rate. 
+ - Small metro and micropolitan have lower death rate for higher confirmed cases. This might because some counties activly test and confirmed cases. With enough medical resource, they can effectively control the death rate. 
+```{r}
+ggplot(data = confirm_cases,aes(x = confirmed_per_100000, y = deaths_per_100000)) + 
+  geom_point(aes(color = NCHS_urbanization))+labs(title="Confirmed vs Deaths ( per_100000 )")+ 
+  geom_smooth( se = FALSE, fullrange = TRUE,mapping=aes(linetype=NCHS_urbanization)) 
+```
+
+### Death rate vs. Urbanization Type
+ - The average death rate of non-core and micropolitan is lower than states of other type, but the non-core states also have much more outliers compared to other states, suggesting that some counties have uneven quality of health system.
+ - Large central metro has comparably high average death rate and low variance, suggesting that those large cenral metro have similar health system, but may be under great pressure treating so many patients.
+```{r}
+ggplot(data = confirm_cases, mapping = aes(x = NCHS_urbanization, y = deaths_rate,fill=NCHS_urbanization)) +
+    geom_boxplot()+
+  scale_fill_manual(values=c("#90AFDD","#2E4D83","#E69F00","#63B9E3","#A7CAF0","#9DB0B7"))+theme(axis.text.x = element_text(angle = 45, hjust = 0.5, vjust = 0.5))+
+  ylim(0,0.5)
+```
+### Urbanization Type vs Hospital Beds per 100000
+ - We analyzed medical resouce availability of states with different urbanizations. 
+ - Large central Metro have higher average hospial beds resource with very low variance.
+ - Small metro have lower capacity to treat paients with fewer hospital beds resource.
+ - states of non-core type varies a lot, generally with rich hospital beds resources.
+```{r}
+ggplot(data = df_combine, mapping = aes(x = NCHS_urbanization, y = Total_Hospital_Beds_Pop,fill=NCHS_urbanization)) +
+    geom_boxplot()+ scale_fill_manual(values=c("#90AFDD","#2E4D83","#E69F00","#63B9E3","#7B8591","#9DB0B7"))+labs(x="Urbanization Type",y="Hospital Beds per 100000")+theme(axis.text.x = element_text(angle = 45, hjust = 0.5, vjust = 0.5))
+```
+### Mapping the deaths per state
+For **death rate of confirmed cases**, which suggesting the treatment quality, we could see from the map that:
+ - Connecticut, Michigan, North Dakota, Louisiana, Indiana. and Wisconsin have very high average death rate (higher than 5%)
+ - Rhode Island, New Hampshire, Alaska, Wyoming, South Dakota have lowest death rate. (less than 1%)
+ - States near the great lakes seems to have higher death rate, while states in midwestern area seems to have lower death rate.
+```{r}
+library(usmap)
+library(ggplot2)
+head(select(arrange(state_Cases,desc(deaths_rate_state)),state, deaths_rate_state))
+tail(select(arrange(state_Cases,desc(deaths_rate_state)),state, deaths_rate_state))
+plot_usmap(data=state_Cases,regions = "state",values="deaths_rate_state")+
+scale_fill_gradientn(colours = c("#fffcf9", "#ffecd8","#c36200", "#b25a00"),name = "death_rate") + theme(legend.position = "right")+labs(title = "Deaths Rate Per State", subtitle = "( = Deaths / Confirmed )") 
+```
+### Mapping the confirmed and death cases per capita
+ - The distribution of confirmed and death cases are similar, for example, east coast area like New Jersey, Connecticut, Massachusetts have very high confirmed and death cases per 100000 residents, suggesting that their health systems may be overloaded.
+ - Some states like Utah have a lot confirmed cases but low death cases, suggesting that patients there received effectivetreatment.
+
+```{r}
+head(select(arrange(state_Cases,desc(confirmed_per_100000_state)),state, confirmed_per_100000_state))
+tail(select(arrange(state_Cases,desc(confirmed_per_100000_state)),state, confirmed_per_100000_state))
+plot_usmap(data=state_Cases,regions = "state",values="confirmed_per_100000_state")+
+scale_fill_gradientn(colours = c("#fff4ef", "#ff681b","#eb4f00", "#8d2f00", "#5e2000"),name = "confirmed_per_100000") + theme(legend.position = "right")+labs(title = "Confirmed Per 100000 Population")
+
+head(select(arrange(state_Cases,desc(deaths_per_100000_state)),state, deaths_per_100000_state))
+tail(select(arrange(state_Cases,desc(deaths_per_100000_state)),state, deaths_per_100000_state))
+plot_usmap(data=state_Cases,regions = "state",values="deaths_per_100000_state")+
+scale_fill_gradientn(colours = c("#f9fff9", "#00ac00","#005000", "#004000", "#003000"),name = "Deaths/Confirmed") + theme(legend.position = "right")+labs(title = "Deaths Per 100000 Population") 
+```
+
+### Mapping the confirmed cases per capita in PA
+We also care about condition in Pennsylvania. From the map, we could see that **eastern area** of pennsylvania like Philadelphia, Lehigh, Monroe have very high confirmed cases per capita.
+```{r}
+head(select(arrange(filter(confirm_cases,state=="Pennsylvania"),desc(confirmed_per_100000)),counties, confirmed_per_100000))
+plot_usmap(data=confirm_cases,include = c("Pennsylvania"),regions = "counties",values="confirmed_per_100000",labels = TRUE)+
+scale_fill_gradientn(colours = c("#fff4ef", "#ff681b","#eb4f00", "#8d2f00"),name = "Confirmed Cases") + theme(legend.position = "right")+labs(title = "Confirmed Cases in Pennsylvania")
+```
+
+
+## Hospital & ICU Bed Capacity
+For this part, we highlighted states that have low medical capacity.
+
+### Total Hospital Beds by State per 100,000 adults
+Washington, Oregon, and New Mexico have the fewest hospital beds per capita.
+South Dakota, North Dakota and Mississippi have the most per capita. 
+```{r}
+plot_usmap(data=hospop,regions = "state",values="Total_Hospital_Beds_Pop")+
+scale_fill_gradientn(colours = c("#4B0082","#FFFFFF"),name = "Total_Hospital_Beds_Pop") + theme(legend.position = "right")+labs(title = "Total Hospital Beds per 100,000 by State")
+```
+
+### Total ICU Beds by State per 100,000
+Vermont, Hawaii, West Virginia and South Dakota have the fewest total ICU beds per capita. DC, Nevada, and Alabama have the most.
+```{r}
+plot_usmap(data=hospop,regions = "state",values="Total_ICU_Beds_Pop")+
+scale_fill_gradientn(colours = c("#00008B", "#FFFFFF"),name = "Total_ICU_Beds_Pop") + theme(legend.position = "right")+labs(title = "Total ICU Beds per 100,000 by State")
+```
+### How does the ICU bed capcity compare to the need? 
+In none of the 51 states & territories do they have enough ICU beds per 100,000 to sustain the number of people per 100,000 who would need ICU care if infected. (Assuming a 20% infection rate).The values on the x axis show that staes have between 15 and 80 ICU beds per 100,000, whereas with a 20% infection rate, 800-1,000 ICU beds per 100,000 are projected to be needed. There is a huge capacity mismatch here. 
+```{r}
+ggplot(data=df_combine)+  
+geom_point(mapping = aes(x =ICU_Needing_Pop, y =Total_ICU_Beds_Pop ,shape=Infection_level,color=Infection_level, size = Infection_level)) + 
+  labs(x="ICU_Beds_Needing",y="ICU_Available",title="ICU Beds Needing vs Available (per 100000)")
+```
+
+### Elderly Population & ICU Capacity
+Understanding the proportion of the population over 65 might help us understand which states might have greater need for ICU beds. 
+States with the largest proportion of elderly are Florida, Maine, and West Virginia. States with the smallest elderly population are Arkansas, DC, and Utah. 
+
+```{r plot map for pop 65}
+#Map of proportion of population aged over 65
+plot_usmap(data=hospop,regions = "state",values="Prop_65")+
+scale_fill_gradientn(colours = c("#008080", "#ffffff"),name = "Prop_65") + theme(legend.position = "right")+labs(title = "Proportion of Population over 65")
+```
+
+### Propotion of 65+ populaion vs. confirmed cases
+ - We expected that states with more population of age 65+ would have higher confirmed cases, but that is not the case according to the plot. The confirmed cases per capita have a negative relationship with prop_65 with p-value of 0.1963. This suggests that although we learned from news that the older are easier to be infected by Covid-19, their propotion may not be a key factor of number of infected cases, maybe because they are more cautious and less likely to go out and attend social activities.
+
+```{r, echo = F}
+ggplot(data = df_combine, aes(x = Prop_65, y = confirmed_per_100000_state)) + geom_point(aes(colour = NCHS_urbanization)) + stat_smooth(method = "lm", se = FALSE, fullrange = TRUE) 
+age_confirmed = lm(df_combine$confirmed_per_100000_state~df_combine$Prop_65)
+summary(age_confirmed)
+```
+
+### 65+ populaion vs. Available ICU
+We can also look at the available ICU beds per 100,000 and the proportion of the population over 65. We would expect states who have a larger elderly population to also have more ICU beds available. Therefore, we might check for a positive linear relationship between proportion of population over 65 and number of available ICU beds per capita. 
+
+```{r}
+#Scatterplot of available ICU beds per 100,000 by proportion of population over 65
+ggplot(df_combine, mapping = aes(x = Prop_65, y = Available_ICU_Pop)) + 
+  geom_point(aes(size=confirmed_per_100000_state)) +
+  geom_smooth(method = "lm", se = FALSE)
+
+#Linear regression with ICU beds as our y outcome variable and proportion over 65 as predictor
+age = lm(hospop$Available_ICU_Pop~hospop$Prop_65)
+summary(age)
+```
+Instead of what we expected to see, there seems to actually be a slightly negative relationship between the proportion over 65 and the available ICU beds per 100,000. The p value of this regression is 0.08323, with an adjusted R-squared of 0.0399. With a p-value greater than 0.05 statistical relationship is not significant.
+
+### How hospital ICU capaicty change over the next months as seen in the model?
+The model created by HCHI, mapped how the capacity of hospitals would need to increase over the next periods of 6 months out, 12 months out, and 18 months out, using a percentage of the current capacity. I thought that the percentages would increase over time, but after creating a visual, one can see that they actually predict the highest need for increased capacity in the 6 month time period, and it tapers off. 
+
+```{r}
+#Data manipulation
+ICUcapacity = hosp20 %>%
+  select(state, 
+         SixMonths = Percentage_of_Available_ICU_Beds_Needed_Six_Months, 
+         TwelveMonths = Percentage_of_Available_ICU_Beds_Needed_Twelve_Months, 
+         EighteenMonths = Percentage_of_Available_ICU_Beds_Needed_Eighteen_Months)
+
+#get time periods as observation types
+ICUcapacity = ICUcapacity %>%
+  pivot_longer(
+    cols = SixMonths:EighteenMonths,
+    names_to = "TimePeriod",
+    values_to = "Percentage_Needed",
+    values_drop_na = TRUE)
+
+#turn time periods into factor levels and remove percent signs
+ICUcapacity$TimePeriod = as_factor(ICUcapacity$TimePeriod)
+ICUcapacity$Percentage_Needed = ICUcapacity$Percentage_Needed = as.numeric(gsub("[\\%,]", "", ICUcapacity$Percentage_Needed))
+head(ICUcapacity)
+```
+
+### ICU beds needed over 6, 12, 18 months
+```{r fig6, fig.height=8,fig.width=9}
+
+ICUcapacity %>%
+ggplot(ICUcapacity, mapping = aes(x = TimePeriod, y = Percentage_Needed))+
+  geom_line(aes(group = state))+
+  geom_point(aes(color = state))
+
+#What are the states with the highest need for ICU capacity in the first 6 months?
+six = ICUcapacity %>%
+  filter(TimePeriod == 'SixMonths')
+top_n(six, 5)
+
+#States with the lowest need for ICU capaity in the first 6 months?
+sixbottom = ICUcapacity %>%
+  filter(TimePeriod == 'SixMonths')
+top_n(six, -5)
+```
+
+# Part 4: Conclusions & Findings
+According to the JHU data, 54.9% of states have an infection level of below 0.1%, therefore we are not sure how much we can apply the model from HGHI where 20% of the population is affected. However, because we did not examine the prevalence of testing by state, it might be that there are many undetected cases. 
+
+Looking at Top States and Counties to see who has the most amount of cases per 100,000, we were surprised to see that New York City counties were in the top 5, but not among the highest. Instead, the counties with the most confirmed cases/100,000 were in Massachusetts and New Jersey. This demonstrates the problematic way that the media always reports cases/deaths in raw counts, without adjusting for population. 
+
+In examining the states with the highest death rates, we could not draw any conclusions because of our uncertainty surrounding testing rates.
+
+There was a weak linear relationship between deaths per 100,000 and confirmed per 100,000, and no obvious trends among different urbanization types. We thought this would be stronger, if COVID-19 had a consistent death rate. In looking at the death rate and urbanization box plots, we saw that COVID affected Large fringe metros, Medium metros, and small metros similarly. Non-core areas many case levels and a death rates of near 0, with a large distribution of outliers. Interestingly enough, the large central metro urbanization had the most confident death rate (this might be because of the higher testing rate available in cities). I think the main takeaway here is that the Large Central Metros have the most accurate death rate with the least noise. Other urbanization types may have less testing capabilities, and that's why we end up with death rates higher than 10%. 
+
+Looking at Top States and Counties to see who has the most amount of cases per 100,000, we were surprised to see that New York City counties were in the top 5, but not among the highest. Instead, the counties with the most confirmed cases/100,000 were in Massachusetts and New Jersey. This demonstrates the problematic way that the media always reports cases/deaths in raw counts, without adjusting for population. 
+
+The states with the highest number deaths per 100,000 were Louisiana, New Jersey, Connecticut and Massachusetts, with New Jersey also having the largest number of cases per 100,000. 
+
+In looking at the confirmed cases in PA, it’s clear that the eastern side of the state is much more heavily affected than the west, with the most confirmed cases being in Philadelphia. 
+
+In our exploration of hospital capacity, we saw that according to the model from HGHI, no state has the necessary ICU beds available that would be needed if 20% of the population was affected. 
+
+We saw that Vermont, Hawaii, West Virginia and South Dakota have the fewest total ICU beds per capita. DC, Nevada, and Alabama have the most.
+
+{}
